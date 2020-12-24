@@ -1,3 +1,6 @@
+wasm:
+	wasm-pack build --target no-modules
+
 all:
 	cargo test
 	make install
