@@ -1,9 +1,11 @@
-wasm:
+wasm: test
 	wasm-pack build --target no-modules
 
-all:
-	cargo test
+all: test
 	make install
+
+test:
+	cargo test
 
 install:
 	cargo install --path . --force
