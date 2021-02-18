@@ -3,6 +3,7 @@ extern crate anyhow;
 extern crate nom;
 
 pub mod builtins;
+pub mod errors;
 pub mod eval;
 pub mod eval_wasm;
 pub mod json;
