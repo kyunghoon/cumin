@@ -1,3 +1,4 @@
+use crate::parser::entries::*;
 use crate::parser::typing::*;
 use crate::parser::util::*;
 use anyhow::Result;
@@ -20,9 +21,10 @@ pub enum Value {
     Bool(bool),
     Str(String),
     Env(String, Option<String>),
-    Dict(Option<String>, Vec<(String, Value)>),
+    Dict(Option<String>, Entries),
     EnumVariant(String, String),
     Array(Typing, Vec<Value>),
+    Tuple(Vec<Value>),
     Optional(Typing, Box<Option<Value>>),
     Wrapped(Typing, Box<Value>),
 }
@@ -39,6 +41,7 @@ impl Value {
                 Typing::UserTyping(name.to_string())
             }
             Value::Array(typ, _) => Typing::Array(Box::new(typ.clone())),
+            Value::Tuple(elems) => Typing::Tuple(elems.iter().map(|val| val.type_of()).collect()),
             Value::Optional(typ, _) => Typing::Option(Box::new(typ.clone())),
             Value::Wrapped(typ, _) => typ.clone(),
             _ => Typing::Any,
@@ -67,6 +70,14 @@ impl Value {
                 } else {
                     bail!("Cannot unify Array<{:?}> and Array<{:?}>", &s, &t);
                 }
+            }
+            (Tuple(elems), Typing::Tuple(types)) => {
+                let elems = elems
+                    .iter()
+                    .zip(types.iter())
+                    .map(|(val, ty)| val.cast(&ty))
+                    .collect::<Result<Vec<Value>>>()?;
+                Tuple(elems)
             }
             (Optional(s, val), Typing::Option(t)) => {
                 if let Some(typ) = Typing::unify(s, t) {

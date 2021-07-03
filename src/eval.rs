@@ -1,6 +1,8 @@
 use crate::builtins;
 use crate::json::*;
-use crate::parser::{cumin::*, expr::*, module::load_module, statement::*, typing::*, value::*};
+use crate::parser::{
+    cumin::*, entries::*, expr::*, module::load_module, statement::*, typing::*, value::*,
+};
 use crate::{assert_args_eq, assert_args_leq, bail_type_error};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -48,6 +50,16 @@ fn eval_conf(mut env: &mut Environ, conf: &Cumin) -> Result<Value> {
     for stmt in conf.0.iter() {
         match stmt {
             Struct(sname, fields) => {
+                // key duplication check
+                {
+                    let mut used = HashSet::new();
+                    for (name, _, _) in fields.iter() {
+                        if used.contains(&name) {
+                            bail!("Duplicated Key `{}` in struct `{}`", name, sname);
+                        }
+                        used.insert(name);
+                    }
+                }
                 let mut simplified_fields = vec![];
                 for (name, typ, default) in fields.iter() {
                     let simplified = match default {
@@ -171,7 +183,7 @@ fn eval_expr(env: &Environ, expr: &Expr) -> Result<Value> {
                             bail!("Not supplied Field `{}` for Struct `{}`", name, fname);
                         }
                     }
-                    Ok(Dict(Some(fname.to_string()), items))
+                    Ok(Dict(Some(fname.to_string()), Entries::new(items)))
                 }
                 // Type Apply
                 _ if env.types.contains_key(fname) => {
@@ -243,7 +255,7 @@ fn eval_expr(env: &Environ, expr: &Expr) -> Result<Value> {
                         }
                     }
                 }
-                Ok(Dict(Some(fname.to_string()), values))
+                Ok(Dict(Some(fname.to_string()), Entries::new(values)))
             } else if let Some((env_inner, fields, body)) = env.funs.get(fname) {
                 let args: HashMap<String, Expr> = items.iter().cloned().collect();
                 assert_args_leq!(fname, args.len(), fields.len());
@@ -280,11 +292,21 @@ fn eval_expr(env: &Environ, expr: &Expr) -> Result<Value> {
         }
         AnonymousStruct(items) => {
             let mut values = vec![];
+            // key duplication check
+            {
+                let mut used = HashSet::new();
+                for (name, _, _) in items.iter() {
+                    if used.contains(&name) {
+                        bail!("Duplicated Key `{}` in an AnonymousStruct", name);
+                    }
+                    used.insert(name);
+                }
+            }
             for (name, typ, val) in items.iter() {
                 let val = eval_expr(&env, &val)?.cast(typ)?;
                 values.push((name.to_string(), val.clone()));
             }
-            Ok(Dict(None, values))
+            Ok(Dict(None, Entries::new(values)))
         }
         Concat(x, y) => {
             let a = eval_expr(&env, &x)?;
@@ -370,6 +392,23 @@ fn eval_expr(env: &Environ, expr: &Expr) -> Result<Value> {
             };
             Ok(ret)
         }
+        Mod(x, y) => {
+            let a = eval_expr(&env, &x)?;
+            let b = eval_expr(&env, &y)?;
+            let ret = match (a, b) {
+                (Nat(x), Nat(y)) => Nat(x % y),
+                (Nat(x), Int(y)) => Int(x as i128 % y),
+                (Nat(x), Float(y)) => Float(x as f64 % y),
+                (Int(x), Nat(y)) => Int(x % y as i128),
+                (Int(x), Int(y)) => Int(x % y),
+                (Int(x), Float(y)) => Float(x as f64 % y),
+                (Float(x), Nat(y)) => Float(x % y as f64),
+                (Float(x), Int(y)) => Float(x % y as f64),
+                (Float(x), Float(y)) => Float(x % y),
+                (x, y) => bail_type_error!(compute x "%" y),
+            };
+            Ok(ret)
+        }
         Pow(x, y) => {
             let a = eval_expr(&env, &x)?;
             let b = eval_expr(&env, &y)?;
@@ -447,7 +486,19 @@ fn eval_expr(env: &Environ, expr: &Expr) -> Result<Value> {
         Equal(x, y) => {
             let a = eval_expr(&env, &x)?;
             let b = eval_expr(&env, &y)?;
-            Ok(Bool(a == b))
+            let s = a.type_of();
+            let t = b.type_of();
+            if let Some(ty) = Typing::unify(&s, &t) {
+                let a = a.cast(&ty)?;
+                let b = b.cast(&ty)?;
+                Ok(Bool(a == b))
+            } else {
+                bail!(
+                    "Cannot compare different type values: {:?} and {:?}",
+                    &a,
+                    &b
+                );
+            }
         }
         Less(x, y) => {
             let a = eval_expr(&env, &x)?;
@@ -482,6 +533,13 @@ fn eval_expr(env: &Environ, expr: &Expr) -> Result<Value> {
                 values.push(val);
             }
             Ok(Array(element_type, values))
+        }
+        Expr::Tuple(elements) => {
+            let elements: Vec<Value> = elements
+                .iter()
+                .map(|e| eval_expr(&env, &e))
+                .collect::<Result<_>>()?;
+            Ok(Value::Tuple(elements))
         }
         Blocked(conf_inner) => {
             let mut env_inner: Environ = (*env).clone();
@@ -626,6 +684,14 @@ mod test_eval_from_parse {
         assert_eval!("[1] == [1]", JSON::Bool(true));
         assert_eval!("[1, 2] == concat([1], [2])", JSON::Bool(true));
         assert_eval!("[1, 2] != [2, 1]", JSON::Bool(true));
+        assert_eval!("{{ x=1 }} == {{ x=1 }}", JSON::Bool(true));
+        assert_eval!("{{ x=1, y=1 }} == {{ y=1, x=1 }}", JSON::Bool(true));
+        assert_eval!("{{ x=1, y=2 }} != {{ y=1, x=2 }}", JSON::Bool(true));
+        assert_eval!("let x: Int = 1; x == 1", JSON::Bool(true));
+        assert_eval!(
+            "let x: Int = 1; let y: Nat = 1; [x] == [y]",
+            JSON::Bool(true)
+        );
     }
 
     #[test]
@@ -777,6 +843,25 @@ mod test_eval_from_parse {
         assert_eval!(
             "let f(x: Int) = x; fn g (x: Int) = f(x); g(2)",
             JSON::Int(2)
+        );
+    }
+
+    #[test]
+    fn test_tuple() {
+        assert_eval!(
+            "(1, 2, 3)",
+            JSON::Array(vec![JSON::Nat(1), JSON::Nat(2), JSON::Nat(3)])
+        );
+        assert_eval!(
+            "struct S{x:Int}
+            (1, (S(2), \"3\"))",
+            JSON::Array(vec![
+                JSON::Nat(1),
+                JSON::Array(vec![
+                    JSON::Dict(vec![("x".to_string(), JSON::Int(2))]),
+                    JSON::Str("3".to_string())
+                ]),
+            ])
         );
     }
 }

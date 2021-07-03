@@ -25,6 +25,7 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
+    Mod(Box<Expr>, Box<Expr>),
     Pow(Box<Expr>, Box<Expr>),
     Minus(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
@@ -34,6 +35,7 @@ pub enum Expr {
     Equal(Box<Expr>, Box<Expr>),
     Less(Box<Expr>, Box<Expr>),
     Arrayed(Vec<Expr>),
+    Tuple(Vec<Expr>),
     Blocked(Box<Cumin>),
     AsCast(Box<Expr>, Typing),
 }
@@ -117,7 +119,10 @@ fn term(input: &str) -> IResult<&str, Expr> {
     let (input, _) = commentable_spaces(input)?;
     fold_many0(
         tuple((
-            terminated(alt((tag("**"), tag("*"), tag("/"))), commentable_spaces),
+            terminated(
+                alt((tag("**"), tag("*"), tag("/"), tag("%"))),
+                commentable_spaces,
+            ),
             as_expr,
         )),
         x,
@@ -125,6 +130,7 @@ fn term(input: &str) -> IResult<&str, Expr> {
             "**" => Expr::Pow(Box::new(acc), Box::new(val)),
             "*" => Expr::Mul(Box::new(acc), Box::new(val)),
             "/" => Expr::Div(Box::new(acc), Box::new(val)),
+            "%" => Expr::Mod(Box::new(acc), Box::new(val)),
             _ => panic!(),
         },
     )(input)
@@ -264,6 +270,16 @@ fn factor(input: &str) -> IResult<&str, Expr> {
         |(_, _, elems, _, _)| Expr::Arrayed(elems),
     );
 
+    // ( <expr> , )
+    let tuple_expr = map(
+        tuple((
+            tag("("),
+            separated_list1(tuple((tag(","), commentable_spaces)), expr),
+            tag(")"),
+        )),
+        |item| Expr::Tuple(item.1),
+    );
+
     // <value>
     let avalue = map(value, Expr::Val);
 
@@ -280,6 +296,7 @@ fn factor(input: &str) -> IResult<&str, Expr> {
             blocked_expr,
             arrayed_expr,
             apply_expr,
+            tuple_expr,
             field_apply_expr,
             vvalue,
         )),
@@ -336,6 +353,7 @@ mod test_expr {
     #[test]
     fn test_arith() {
         assert_expr!("1 // one", Val(Nat(1)));
+        assert_expr!("( 1 )", Val(Nat(1)));
         assert_expr!("-1", Val(Int(-1)));
         assert_expr!("0 + 1", Add(Box::new(Val(Nat(0))), Box::new(Val(Nat(1)))));
         assert_expr!(
@@ -377,8 +395,15 @@ mod test_expr {
                 Box::new(Expr::Var("z".to_string()))
             )
         );
+        assert_expr!("5 % 2", Mod(Box::new(Val(Nat(5))), Box::new(Val(Nat(2)))));
+        assert_expr!("5 %2", Mod(Box::new(Val(Nat(5))), Box::new(Val(Nat(2)))));
+        assert_expr!("5% 2", Mod(Box::new(Val(Nat(5))), Box::new(Val(Nat(2)))));
+        assert_expr!("5%2", Mod(Box::new(Val(Nat(5))), Box::new(Val(Nat(2)))));
         assert_expr!("1+-1", Add(Box::new(Val(Nat(1))), Box::new(Val(Int(-1)))));
+        assert_expr!("1 / 2", Div(Box::new(Val(Nat(1))), Box::new(Val(Nat(2)))));
         assert_expr!("1  /2", Div(Box::new(Val(Nat(1))), Box::new(Val(Nat(2)))));
+        assert_expr!("1/  2", Div(Box::new(Val(Nat(1))), Box::new(Val(Nat(2)))));
+        assert_expr!("1/2", Div(Box::new(Val(Nat(1))), Box::new(Val(Nat(2)))));
         assert_expr!(
             "1 + 2 - 3",
             Sub(
@@ -738,5 +763,10 @@ mod test_expr {
     fn test_var() {
         assert_expr!("hoge", Expr::Var("hoge".to_string()));
         assert_expr!("_hoge0", Expr::Var("_hoge0".to_string()));
+    }
+
+    #[test]
+    fn test_tuple() {
+        assert_expr!("(1, 2)", Expr::Tuple(vec![Val(Nat(1)), Val(Nat(2)),]));
     }
 }
