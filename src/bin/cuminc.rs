@@ -22,7 +22,7 @@ struct Opt {
     input_cumin: String,
 }
 
-fn cat(file_name: &String) -> String {
+fn cat(file_name: &String) -> Result<String> {
     use std::fs::File;
     use std::io::BufReader;
     use std::io::{self, Read};
@@ -31,18 +31,18 @@ fn cat(file_name: &String) -> String {
     if file_name == "-" {
         let stdin = io::stdin();
         let mut handle = stdin.lock();
-        handle.read_to_string(&mut content).unwrap();
+        handle.read_to_string(&mut content)?;
     } else {
-        let file = File::open(&file_name).unwrap();
+        let file = File::open(&file_name)?;
         let mut buf_reader = BufReader::new(file);
-        buf_reader.read_to_string(&mut content).unwrap();
+        buf_reader.read_to_string(&mut content)?;
     }
-    content
+    Ok(content)
 }
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
-    let content = cat(&opt.input_cumin);
+    let content = cat(&opt.input_cumin)?;
     if let Ok((rest, cumin)) = cumin(content.as_str()) {
         if !rest.is_empty() {
             eprintln!("Parsing Stop with `{}`", rest);
@@ -55,7 +55,9 @@ fn main() -> Result<()> {
         let json = eval(cumin, cd)?;
         match opt.output_type.as_str() {
             "json" | "JSON" | "Json" => {
-                println!("{}", json.stringify());
+                let value: serde_json::Value = serde_json::from_str(&json.stringify())?;
+                let json_str = serde_json::to_string_pretty(&value)?;
+                println!("{}", json_str);
             }
             "yaml" | "YAML" | "Yaml" => {
                 let value: serde_json::Value = serde_json::from_str(&json.stringify())?;
